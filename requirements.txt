@@ -1,4 +1,5 @@
 python-telegram-bot==22.6
 requests
 python-dotenv
+Flask==3.0.0
 
