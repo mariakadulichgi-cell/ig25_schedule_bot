@@ -234,27 +234,56 @@ def _glue_pr_lines(lines: list[str]) -> list[str]:
     return out
 
 
+from collections import OrderedDict
+
 def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) -> str:
     title = f"{group_name} — {ddmm}:"
     if not items:
-        return title + "\n\n• Нет занятий / нет данных"
+        return title + "\n• Нет занятий / нет данных"
 
-    out_lines = [title, ""]
+    # 1) Группируем всё по времени (чтобы не было 3 буллета на один слот)
+    grouped: "OrderedDict[str, list[str]]" = OrderedDict()
     for tm, tx in items:
-        tx = (tx or "").replace("\r", "")
-        raw_lines = tx.splitlines()
-        parts = _glue_pr_lines(raw_lines)
-        if not parts:
+        tm = (tm or "").strip()
+        tx = (tx or "").strip()
+        if not tm or not tx:
             continue
 
-        # первая строка — с временем
-        out_lines.append(f"• {tm} — {parts[0]}")
-        # остальные строки — с отступом
-        for p in parts[1:]:
-            out_lines.append(f"  {p}")
+        bucket = grouped.setdefault(tm, [])
+        # tx может быть уже многострочным
+        for line in tx.splitlines():
+            line = line.strip()
+            if line:
+                bucket.append(line)
 
-        out_lines.append("")  # пустая строка как абзац
+    if not grouped:
+        return title + "\n• Нет занятий / нет данных"
 
+    # 2) Чистим повторы внутри каждого времени и красиво форматируем
+    out_lines = [title]
+    for tm, lines in grouped.items():
+        # убираем дубли, сохраняя порядок
+        seen = set()
+        uniq = []
+        for ln in lines:
+            key = ln.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(ln)
+
+        if not uniq:
+            continue
+
+        # первый ряд — с буллетом
+        out_lines.append(f"• {tm} — {uniq[0]}")
+        # остальные — без буллета, с отступом
+        for ln in uniq[1:]:
+            out_lines.append(f"  {ln}")
+
+        out_lines.append("")  # пустая строка между парами
+
+    # уберём хвостовые пустые строки
     while out_lines and out_lines[-1] == "":
         out_lines.pop()
 
