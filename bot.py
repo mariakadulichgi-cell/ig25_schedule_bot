@@ -12,6 +12,22 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+# ✅ ВОТ СЮДА ВСТАВЛЯЕМ Flask-блок
+from threading import Thread
+from flask import Flask
+
+web = Flask(__name__)
+
+@web.get("/")
+def home():
+    return "ok", 200
+
+def run_web():
+    port = int(os.environ.get("PORT", "10000"))
+    web.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    Thread(target=run_web, daemon=True).start()
 
 # ----------------- НАСТРОЙКИ -----------------
 TZ = ZoneInfo("Asia/Krasnoyarsk")  # Красноярск (+07)
@@ -361,16 +377,22 @@ async def send_schedule(update: Update, ddmm: str):
 
 
 def main():
-    load_dotenv()  # чтобы можно было хранить токен в .env
-
+    load_dotenv()
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
-        raise RuntimeError("Нет BOT_TOKEN в переменных окружения (.env или export).")
+        raise RuntimeError("Нет BOT_TOKEN...")
 
+    # 🔥 Запускаем мини-веб-сервер для Render
+    keep_alive()
+
+    # Создаём приложение бота
     app = Application.builder().token(token).build()
 
+    # ✅ Обработчики команд
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("day", cmd_day))
+
+    # ✅ Обработчик текста (например "день 02.02")
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_day))
 
     print("Bot started / polling")
