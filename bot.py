@@ -180,7 +180,8 @@ def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
             parts.append(v)
 
         if not parts:
-            continue
+           items.append((cur_time, "нет пары"))
+           continue    
 
         # объединяем, убираем дубли строк внутри ячейки
         cell_text = "\n".join(parts).strip()
@@ -215,17 +216,31 @@ def _compact_spaces(s: str) -> str:
 
 def _glue_pr_lines(lines: list[str]) -> list[str]:
     """
-    Склеиваем строки, которые выглядят как "пр", "пр / 3-17", "/ 3-17"
-    чтобы не уезжали отдельно.
+    Склеиваем строки, которые выглядят как "пр", "лек", "пр / 3-17", "/ 3-17"
+    чтобы они не уезжали отдельно.
     """
     out: list[str] = []
+    tail_tokens = {"пр", "пр.", "лек", "лек."}
+
     for raw in lines:
         ln = _compact_spaces(raw)
         if not ln:
             continue
 
         low = ln.lower()
-        if out and (low == "пр" or low.startswith("пр/") or low.startswith("пр /") or ln.startswith("/")):
+
+        # 1) если это просто "пр" или "лек" (или с точкой) — приклеиваем к предыдущей строке
+        if out and low in tail_tokens:
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        # 2) если строка начинается с "пр /" или "пр." или "лек /" — тоже приклеиваем
+        if out and (low.startswith("пр /") or low.startswith("пр/") or low.startswith("лек /") or low.startswith("лек/")):
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        # 3) если строка начинается с "/" (типа "/ 3-17") — приклеиваем к предыдущей
+        if out and ln.startswith("/"):
             out[-1] = _compact_spaces(out[-1] + " " + ln)
             continue
 
@@ -236,7 +251,30 @@ def _glue_pr_lines(lines: list[str]) -> list[str]:
 
 from collections import OrderedDict
 
+def merge_items_by_time(items):
+    merged = OrderedDict()
+
+    for tm, tx in items:
+        tm = (tm or "").strip()
+        tx = (tx or "").strip()
+        if not tm:
+            continue
+
+        # если ещё нет такого времени
+        if tm not in merged:
+            merged[tm] = tx
+        else:
+            # если раньше было "нет пары", а сейчас предмет — заменяем
+            if merged[tm].lower() == "нет пары" and tx.lower() != "нет пары":
+                merged[tm] = tx
+            # если оба предметы — объединяем
+            elif tx.lower() != "нет пары" and tx not in merged[tm]:
+                merged[tm] += "\n" + tx
+
+    return [(tm, tx) for tm, tx in merged.items()]
+
 def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) -> str:
+    items = merge_items_by_time(items)    
     title = f"{group_name} — {ddmm}:"
     if not items:
         return title + "\n• Нет занятий / нет данных"
