@@ -1,3 +1,4 @@
+# bot.py
 import os
 import re
 import csv
@@ -5,6 +6,7 @@ import io
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from threading import Thread
 
 import requests
 from dotenv import load_dotenv
@@ -18,8 +20,9 @@ from telegram.ext import (
     filters,
 )
 
-# --- Flask "костыль" для Render Web Service (чтобы был открыт порт) ---
-from threading import Thread
+# =======================
+# Render "костыль": Flask, чтобы был открытый порт
+# =======================
 from flask import Flask
 
 web = Flask(__name__)
@@ -28,47 +31,48 @@ web = Flask(__name__)
 def home():
     return "ok", 200
 
-def run_web():
+def _run_web():
     port = int(os.environ.get("PORT", "10000"))
     web.run(host="0.0.0.0", port=port)
 
 def keep_alive():
-    Thread(target=run_web, daemon=True).start()
+    Thread(target=_run_web, daemon=True).start()
 
 
-# --- Настройки ---
-TZ = ZoneInfo(os.getenv("TZ", "Asia/Krasnoyarsk"))  # Красноярск (+07) по умолчанию
-DEFAULT_GROUP = os.getenv("GROUP_NAME", "ИГ25-01Б-ОМ").strip()
+# =======================
+# НАСТРОЙКИ
+# =======================
+TZ = ZoneInfo("Asia/Krasnoyarsk")  # Красноярск (+07)
+DEFAULT_GROUP = os.getenv("GROUP_NAME", "ИГ25-01Б-ОМ")
 
+# Ищем дату в формате 02.02 / 02-02 / 02/02 / 02.02.26 и т.п.
 DATE_RE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\b")
-TIME_RE = re.compile(r"(\d{1,2})[.:](\d{2})\s*[–\-]\s*(\d{1,2})[.:](\d{2})")
+# Ищем время или диапазон (8:30, 8.30, 8:30-10:05, 8.30–10.05)
+TIME_RE = re.compile(r"\b(\d{1,2})[.:](\d{2})(?:\s*[-–]\s*(\d{1,2})[.:](\d{2}))?\b")
 
-# Кэш CSV, чтобы не дергать гугл на каждое сообщение
+# Кэш, чтобы не дергать гугл на каждое сообщение
 _CACHE_TEXT = None
 _CACHE_TS = 0.0
 CACHE_SECONDS = 60
 
 
+# =======================
+# ВСПОМОГАТЕЛЬНЫЕ
+# =======================
 def norm(s: str) -> str:
     return (s or "").replace("\xa0", " ").strip()
 
+def _compact_spaces(s: str) -> str:
+    s = (s or "").replace("\xa0", " ").replace("\t", " ")
+    s = re.sub(r"[ ]{2,}", " ", s)
+    return s.strip()
 
 def norm_group(s: str) -> str:
     """Нормализуем название группы: разные тире/пробелы -> одинаково"""
     s = norm(s)
-    s = s.replace("—", "-").replace("–", "-")
+    s = s.replace("–", "-").replace("—", "-")
     s = re.sub(r"\s+", "", s)
     return s.upper()
-
-
-def normalize_time(s: str) -> str:
-    s = norm(s)
-    m = TIME_RE.search(s)
-    if not m:
-        return s
-    h1, m1, h2, m2 = m.groups()
-    return f"{int(h1)}:{m1}–{int(h2)}:{m2}"
-
 
 def parse_ddmm(text: str) -> str | None:
     m = DATE_RE.search(text or "")
@@ -78,6 +82,15 @@ def parse_ddmm(text: str) -> str | None:
     mm = int(m.group(2))
     return f"{dd:02d}.{mm:02d}"
 
+def normalize_time(s: str) -> str:
+    s = norm(s)
+    m = TIME_RE.search(s)
+    if not m:
+        return s
+    h1, m1, h2, m2 = m.groups()
+    if h2 and m2:
+        return f"{int(h1)}:{m1}–{int(h2)}:{m2}"
+    return f"{int(h1)}:{m1}"
 
 def fetch_csv_text(url: str) -> str:
     global _CACHE_TEXT, _CACHE_TS
@@ -92,10 +105,13 @@ def fetch_csv_text(url: str) -> str:
     return r.text
 
 
+# =======================
+# ЛОГИКА ПОИСКА КОЛОНОК (Дата/Часы + колонки группы)
+# =======================
 def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     """
-    Ищем строку заголовков (где есть 'Дата' и 'Часы'),
-    потом находим колонки группы в следующих строках.
+    Ищем строку заголовков, где есть 'Дата' и 'Часы' (в первых 60 строках),
+    затем ищем колонки группы в следующих строках.
     """
     g_need = norm_group(group_name)
 
@@ -103,7 +119,6 @@ def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     date_col = None
     time_col = None
 
-    # 1) строка заголовков
     for i in range(min(60, len(rows))):
         row = [norm(x) for x in rows[i]]
         low = [x.lower() for x in row]
@@ -116,7 +131,6 @@ def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     if header_row_i is None:
         raise RuntimeError("Не нашла заголовки 'Дата' и 'Часы' в таблице (CSV).")
 
-    # 2) колонки группы под заголовками (в пределах 12 строк)
     group_cols = []
     for i in range(header_row_i, min(header_row_i + 12, len(rows))):
         row = rows[i]
@@ -128,6 +142,85 @@ def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     return header_row_i, date_col, time_col, group_cols
 
 
+# =======================
+# СКЛЕЙКИ "пр", "лек" и прочего
+# =======================
+_TAG_ONLY = {"пр", "лек"}  # можно расширить: {"пр", "лек", "лаб"}
+
+def _glue_short_tags(lines: list[str]) -> list[str]:
+    """
+    Склеиваем строки, которые равны "пр" или "лек" с предыдущей строкой.
+    """
+    out = []
+    for ln in lines:
+        ln = _compact_spaces(ln)
+        if not ln:
+            continue
+        low = ln.lower()
+
+        if out and low in _TAG_ONLY:
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        # Частый случай: "пр" прилепилось с пробелом в начале
+        if out and (low == "пр" or low == "лек"):
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        out.append(ln)
+    return out
+
+def _glue_pr_slash_lines(lines: list[str]) -> list[str]:
+    """
+    Склеиваем переносы вида:
+    - "пр" + "/ 3-17"
+    - "пр / 3-17" (если "/ 3-17" отдельно)
+    - "/ 3-17" отдельно -> приклеить к предыдущей (если есть)
+    """
+    out = []
+    for raw in lines:
+        ln = _compact_spaces(raw)
+        if not ln:
+            continue
+
+        low = ln.lower()
+
+        # Если строка просто "/ 3-17" или "/3-17" — приклеиваем к предыдущей
+        if out and (ln.startswith("/") or ln.startswith("/ ")):
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        # Если предыдущая строка заканчивается на "пр" или "лек" и эта начинается с "/"
+        if out and out[-1].lower() in _TAG_ONLY and ln.startswith("/"):
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        out.append(ln)
+    return out
+
+def _postprocess_cell_text(cell_text: str) -> list[str]:
+    """
+    Разбиваем текст ячейки на строки, чистим мусор, склеиваем "пр"/"лек".
+    """
+    txt = (cell_text or "").replace("\r", "")
+    raw_lines = [l.strip() for l in txt.splitlines() if l.strip()]
+
+    cleaned = []
+    for l in raw_lines:
+        low = l.lower()
+        # выкидываем мусорные строки (если они вдруг попались)
+        if "семестр" in low or "утверждаю" in low:
+            continue
+        cleaned.append(l)
+
+    cleaned = _glue_short_tags(cleaned)
+    cleaned = _glue_pr_slash_lines(cleaned)
+    return cleaned
+
+
+# =======================
+# ВЫТАЩИТЬ РАСПИСАНИЕ НА ДАТУ
+# =======================
 def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
     reader = csv.reader(io.StringIO(csv_text))
     rows = list(reader)
@@ -135,22 +228,21 @@ def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
     header_i, date_col, time_col, group_cols = find_header_and_group_cols(rows, group_name)
 
     if not group_cols:
-        # полезный дебаг: какие группы вообще видим
+        # полезный дебаг: какие группы видим
         groups_found = set()
-        for i in range(min(40, len(rows))):
+        for i in range(min(50, len(rows))):
             for cell in rows[i]:
                 c = norm(cell)
-                if c.startswith("ИГ"):
+                if c.startswith("ИГ") or c.startswith("иг"):
                     groups_found.add(c)
         hint = ", ".join(sorted(groups_found)) if groups_found else "не нашла ни одной"
-        raise RuntimeError(f"Не нашла колонку группы '{group_name}'. В таблице вижу группы: {hint}")
+        raise RuntimeError(f"Не нашла колонку группы '{group_name}'. В таблице вижу: {hint}")
 
-    cur_date = ""
-    cur_time = ""
-    items = []
+    items = []  # list[(time, text)]
+    cur_date = None
+    cur_time = None
 
-    for r in rows[header_i + 1:]:
-        # защита: расширяем строку, если короткая
+    for r in rows[header_i + 1 :]:
         need_len = max(date_col, time_col, max(group_cols)) + 1
         if len(r) < need_len:
             r = r + [""] * (need_len - len(r))
@@ -169,141 +261,33 @@ def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
         if cur_date != target_ddmm:
             continue
 
+        if not cur_time:
+            continue
+
+        # собираем текст из всех колонок группы
         parts = []
         for j in group_cols:
             v = norm(r[j])
             if not v:
                 continue
-            # чистим мусор
-            if "семестр" in v.lower() or "утверждаю" in v.lower():
-                continue
             parts.append(v)
 
+        # ✅ НОВОЕ: если в строке нет пары (пусто в колонках группы),
+        # но время есть — добавляем "нет пары"
         if not parts:
-           items.append((cur_time, "нет пары"))
-           continue    
+            items.append((cur_time, "нет пары"))
+            continue
 
-        # объединяем, убираем дубли строк внутри ячейки
+        # объединяем, убираем дубли строк
         cell_text = "\n".join(parts).strip()
-        lines = [x.strip() for x in cell_text.splitlines() if x.strip()]
-        uniq_lines = []
-        seen = set()
-        for x in lines:
-            if x not in seen:
-                seen.add(x)
-                uniq_lines.append(x)
+        lines = _postprocess_cell_text(cell_text)
 
-        items.append((cur_time, "\n".join(uniq_lines)))
-
-    # убираем повторы (время+текст)
-    out = []
-    seen = set()
-    for tm, tx in items:
-        key = (tm, tx)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((tm, tx))
-
-    return out
-
-
-def _compact_spaces(s: str) -> str:
-    # приводим любые пробелы/табы/неразрывные/тонкие пробелы к одному обычному пробелу
-    s = (s or "")
-    s = s.replace("\u00a0", " ")   # NBSP
-    s = s.replace("\u202f", " ")   # narrow NBSP
-    s = s.replace("\u2009", " ")   # thin space
-    s = s.replace("\t", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _glue_pr_lines(lines: list[str]) -> list[str]:
-    """
-    Склеиваем строки, чтобы "пр", "лек", "/ 3-17" не уезжали отдельно.
-    Примеры:
-    "синхронно,      пр" -> "синхронно, пр"
-    "/ 3-17" приклеиваем к предыдущей -> "... пр / 3-17"
-    """
-    out: list[str] = []
-
-    for raw in lines:
-        ln = _compact_spaces(raw)
-        if not ln:
+        # если после чистки всё пропало — тоже считаем как "нет пары"
+        if not lines:
+            items.append((cur_time, "нет пары"))
             continue
 
-        low = ln.lower()
-
-        # 1) если строка начинается с "/" — приклеиваем к предыдущей
-        if out and ln.startswith("/"):
-            out[-1] = _compact_spaces(out[-1] + " " + ln)
-            continue
-
-        # 2) если строка это "пр" или "лек" — приклеиваем к предыдущей
-        if out and low in ("пр", "пр.", "лек", "лек."):
-            out[-1] = _compact_spaces(out[-1] + " " + ln)
-            continue
-
-        # 3) если в строке были "растянутые" пробелы (как у тебя: "синхронно,      пр") —
-        # после _compact_spaces это станет нормальным "синхронно, пр", просто кладём как есть
-        out.append(ln)
-
-    return out
-
-
-from collections import OrderedDict
-
-def merge_items_by_time(items):
-    merged = OrderedDict()
-
-    for tm, tx in items:
-        tm = (tm or "").strip()
-        tx = (tx or "").strip()
-        if not tm:
-            continue
-
-        # если ещё нет такого времени
-        if tm not in merged:
-            merged[tm] = tx
-        else:
-            # если раньше было "нет пары", а сейчас предмет — заменяем
-            if merged[tm].lower() == "нет пары" and tx.lower() != "нет пары":
-                merged[tm] = tx
-            # если оба предметы — объединяем
-            elif tx.lower() != "нет пары" and tx not in merged[tm]:
-                merged[tm] += "\n" + tx
-
-    return [(tm, tx) for tm, tx in merged.items()]
-
-def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) -> str:
-    items = merge_items_by_time(items)    
-    title = f"{group_name} — {ddmm}:"
-    if not items:
-        return title + "\n• Нет занятий / нет данных"
-
-    # 1) Группируем всё по времени (чтобы не было 3 буллета на один слот)
-    grouped: "OrderedDict[str, list[str]]" = OrderedDict()
-    for tm, tx in items:
-        tm = (tm or "").strip()
-        tx = (tx or "").strip()
-        if not tm or not tx:
-            continue
-
-        bucket = grouped.setdefault(tm, [])
-        # tx может быть уже многострочным
-        for line in tx.splitlines():
-            line = line.strip()
-            if line:
-                bucket.append(line)
-
-    if not grouped:
-        return title + "\n• Нет занятий / нет данных"
-
-    # 2) Чистим повторы внутри каждого времени и красиво форматируем
-    out_lines = [title]
-    for tm, lines in grouped.items():
-        # убираем дубли, сохраняя порядок
+        # убираем дубли строк (внутри пары)
         seen = set()
         uniq = []
         for ln in lines:
@@ -313,28 +297,57 @@ def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) ->
             seen.add(key)
             uniq.append(ln)
 
-        if not uniq:
-            continue
+        items.append((cur_time, "\n".join(uniq)))
 
-        # первый ряд — с буллетом
-        out_lines.append(f"• {tm} — {uniq[0]}")
-        # остальные — без буллета, с отступом
-        for ln in uniq[1:]:
-            out_lines.append(f"  {ln}")
+    # Убираем повторы по (время + текст)
+    out = []
+    seen = set()
+    for tm, tx in items:
+        key = (tm, tx)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((tm, tx))
+    return out
+
+
+def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) -> str:
+    title = f"{group_name} — {ddmm}:"
+    if not items:
+        return title + "\n• Нет пар"
+
+    out_lines = [title]
+    for tm, tx in items:
+        tx = _compact_spaces(tx)
+        if not tx:
+            tx = "нет пары"
+
+        # формат как во 2-м примере: одна "пара" одним блоком
+        #   • 8:30–10:05 — Математика...
+        #     Преподаватель...
+        #     Место...
+        out_lines.append(f"• {tm} — {tx.splitlines()[0]}")
+
+        rest = tx.splitlines()[1:]
+        for line in rest:
+            line = _compact_spaces(line)
+            if line:
+                out_lines.append(f"  {line}")
 
         out_lines.append("")  # пустая строка между парами
 
-    # уберём хвостовые пустые строки
     while out_lines and out_lines[-1] == "":
         out_lines.pop()
 
     return "\n".join(out_lines)
 
 
-# --- Telegram handlers ---
+# =======================
+# TELEGRAM HANDLERS
+# =======================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я твой виртуальный помощник ОТЕЛЬКА 🩵. Давай помогу с расписанием!\n\n"
+        "Привет! Я твой виртуальный помощник ОТЕЛЬКА 💙. Давай помогу с расписанием!\n\n"
         "Команды:\n"
         "/today — расписание на сегодня\n"
         "/tomorrow — расписание на завтра\n"
@@ -342,6 +355,35 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Можно и текстом: 30.01 или «день 30.01»"
     )
 
+async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ddmm = datetime.now(TZ).strftime("%d.%m")
+    await send_schedule(update, ddmm)
+
+async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ddmm = (datetime.now(TZ) + timedelta(days=1)).strftime("%d.%m")
+    await send_schedule(update, ddmm)
+
+async def cmd_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if args:
+        ddmm = parse_ddmm(" ".join(args))
+        if not ddmm:
+            await update.message.reply_text("Формат даты: /day 30.01 (ДД.ММ)")
+            return
+    else:
+        ddmm = datetime.now(TZ).strftime("%d.%m")
+
+    await send_schedule(update, ddmm)
+
+async def text_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip().lower()
+    m = re.search(r"(\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?)", text)
+    if not m:
+        return
+    ddmm = parse_ddmm(m.group(1))
+    if not ddmm:
+        return
+    await send_schedule(update, ddmm)
 
 async def send_schedule(update: Update, ddmm: str):
     url = os.getenv("SHEET_CSV_URL", "").strip()
@@ -360,68 +402,33 @@ async def send_schedule(update: Update, ddmm: str):
         await update.message.reply_text(f"Ошибка чтения расписания: {e}")
 
 
-async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ddmm = datetime.now(TZ).strftime("%d.%m")
-    await send_schedule(update, ddmm)
-
-
-async def cmd_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ddmm = (datetime.now(TZ) + timedelta(days=1)).strftime("%d.%m")
-    await send_schedule(update, ddmm)
-
-
-async def cmd_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if args:
-        ddmm = parse_ddmm(" ".join(args))
-        if not ddmm:
-            await update.message.reply_text("Формат даты: /day 30.01 (ДД.ММ)")
-            return
-    else:
-        ddmm = datetime.now(TZ).strftime("%d.%m")
-
-    await send_schedule(update, ddmm)
-
-
-async def text_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip().lower()
-
-    # ловим "30.01" или "день 30.01"
-    m = re.search(r"(\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?)", text)
-    if not m:
-        return
-
-    ddmm = parse_ddmm(m.group(1))
-    if not ddmm:
-        return
-
-    await send_schedule(update, ddmm)
-
-
+# =======================
+# MAIN
+# =======================
 def main():
     load_dotenv()
-
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("Нет BOT_TOKEN...")
 
-    # Render Web Service: запускаем мини-веб, чтобы был порт
+    # запускаем мини-веб-сервер для Render
     keep_alive()
 
     app = Application.builder().token(token).build()
 
-    # Команды
+    # команды
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("tomorrow", cmd_tomorrow))
     app.add_handler(CommandHandler("day", cmd_day))
 
-    # Текст с датой
+    # текстовая дата
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_day))
 
     print("Bot started / polling")
-    app.run_polling()
 
+    # ✅ фикс конфликта getUpdates (если Render перезапустил второй процесс)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
