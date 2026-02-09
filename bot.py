@@ -209,18 +209,24 @@ def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
 
 
 def _compact_spaces(s: str) -> str:
-    s = (s or "").replace("\u00a0", " ").replace("\t", " ")
-    s = re.sub(r"[ ]{2,}", " ", s).strip()
+    # приводим любые пробелы/табы/неразрывные/тонкие пробелы к одному обычному пробелу
+    s = (s or "")
+    s = s.replace("\u00a0", " ")   # NBSP
+    s = s.replace("\u202f", " ")   # narrow NBSP
+    s = s.replace("\u2009", " ")   # thin space
+    s = s.replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def _glue_pr_lines(lines: list[str]) -> list[str]:
     """
-    Склеиваем строки, которые выглядят как "пр", "лек", "пр / 3-17", "/ 3-17"
-    чтобы они не уезжали отдельно.
+    Склеиваем строки, чтобы "пр", "лек", "/ 3-17" не уезжали отдельно.
+    Примеры:
+    "синхронно,      пр" -> "синхронно, пр"
+    "/ 3-17" приклеиваем к предыдущей -> "... пр / 3-17"
     """
     out: list[str] = []
-    tail_tokens = {"пр", "пр.", "лек", "лек."}
 
     for raw in lines:
         ln = _compact_spaces(raw)
@@ -229,21 +235,18 @@ def _glue_pr_lines(lines: list[str]) -> list[str]:
 
         low = ln.lower()
 
-        # 1) если это просто "пр" или "лек" (или с точкой) — приклеиваем к предыдущей строке
-        if out and low in tail_tokens:
-            out[-1] = _compact_spaces(out[-1] + " " + ln)
-            continue
-
-        # 2) если строка начинается с "пр /" или "пр." или "лек /" — тоже приклеиваем
-        if out and (low.startswith("пр /") or low.startswith("пр/") or low.startswith("лек /") or low.startswith("лек/")):
-            out[-1] = _compact_spaces(out[-1] + " " + ln)
-            continue
-
-        # 3) если строка начинается с "/" (типа "/ 3-17") — приклеиваем к предыдущей
+        # 1) если строка начинается с "/" — приклеиваем к предыдущей
         if out and ln.startswith("/"):
             out[-1] = _compact_spaces(out[-1] + " " + ln)
             continue
 
+        # 2) если строка это "пр" или "лек" — приклеиваем к предыдущей
+        if out and low in ("пр", "пр.", "лек", "лек."):
+            out[-1] = _compact_spaces(out[-1] + " " + ln)
+            continue
+
+        # 3) если в строке были "растянутые" пробелы (как у тебя: "синхронно,      пр") —
+        # после _compact_spaces это станет нормальным "синхронно, пр", просто кладём как есть
         out.append(ln)
 
     return out
