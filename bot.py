@@ -428,7 +428,11 @@ def main():
     print("Bot started / polling")
 
     # ✅ фикс конфликта getUpdates (если Render перезапустил второй процесс)
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True
+        allowed_updates=Update.ALL_TYPES,
+        close_loop=False, 
+    )
 
 if __name__ == "__main__":
     main()
