@@ -310,29 +310,56 @@ def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
         out.append((tm, tx))
     return out
 
+from collections import OrderedDict
+
+def merge_items_by_time(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """
+    Склеивает строки с одинаковым временем в один блок.
+    Убирает дубли строк внутри одного времени.
+    """
+    merged: "OrderedDict[str, list[str]]" = OrderedDict()
+
+    for tm, tx in items:
+        tm = (tm or "").strip()
+        tx = (tx or "").strip()
+        if not tm or not tx:
+            continue
+
+        lines = [l.strip() for l in tx.splitlines() if l.strip()]
+        bucket = merged.setdefault(tm, [])
+
+        for line in lines:
+            if line not in bucket:
+                bucket.append(line)
+
+    result: list[tuple[str, str]] = []
+    for tm, lines in merged.items():
+        result.append((tm, "\n".join(lines)))
+
+    return result
 
 def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) -> str:
     title = f"{group_name} — {ddmm}:"
+
     if not items:
-        return title + "\n• Нет пар"
+        return title + "\nнет пар"
+
+    # ✅ убираем повторы времени
+    items = merge_items_by_time(items)
 
     out_lines = [title]
-    for tm, tx in items:
-        tx = _compact_spaces(tx)
-        if not tx:
-            tx = "нет пары"
 
-        # формат как во 2-м примере: одна "пара" одним блоком
-        #   • 8:30–10:05 — Математика...
-        #     Преподаватель...
-        #     Место...
-        out_lines.append(f"• {tm} — {tx.splitlines()[0]}")
+    for tm, text in items:
+        parts = [p.strip() for p in text.split("\n") if p.strip()]
+        if not parts:
+            continue
 
-        rest = tx.splitlines()[1:]
-        for line in rest:
-            line = _compact_spaces(line)
-            if line:
-                out_lines.append(f"  {line}")
+        # первая строка — основной текст пары (обычно предмет)
+        out_lines.append(f"• {tm} — {parts[0]}")
+
+        # остальные строки — подробности с отступом (как во “втором примере”)
+        for extra in parts[1:]:
+            out_lines.append(f"  {extra}")
 
         out_lines.append("")  # пустая строка между парами
 
@@ -347,7 +374,7 @@ def format_schedule(group_name: str, ddmm: str, items: list[tuple[str, str]]) ->
 # =======================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я твой виртуальный помощник ОТЕЛЬКА 💙. Давай помогу с расписанием!\n\n"
+        "Привет! Я твой виртуальный помощник ОТЕЛЬКА 🩵. Давай помогу с расписанием!\n\n"
         "Команды:\n"
         "/today — расписание на сегодня\n"
         "/tomorrow — расписание на завтра\n"
