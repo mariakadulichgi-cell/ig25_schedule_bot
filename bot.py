@@ -97,14 +97,21 @@ def fetch_csv_text(url: str) -> str:
     _CACHE_TS = now
     return _CACHE_TEXT
 
+def read_csv_rows(csv_text: str) -> list[list[str]]:
+    # Автоматически определяем разделитель CSV (Google часто даёт ;)
+    sample = csv_text[:5000]
+    delim = ";" if sample.count(";") > sample.count(",") else ","
+
+    reader = csv.reader(io.StringIO(csv_text), delimiter=delim)
+    return list(reader)
 
 # =========================
 # Поиск заголовка и колонок группы
 # =========================
 def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     """
-    Ищем строку, где есть "Дата" и "Часы" (в первых 60 строках),
-    затем ищем колонки группы рядом ниже (в пределах 12 строк).
+    Ищем строку, где есть 'Дата' и 'Часы' (в первых 80 строках),
+    затем ищем колонку группы рядом ниже.
     """
     g_need = norm_group(group_name)
 
@@ -112,22 +119,34 @@ def find_header_and_group_cols(rows: list[list[str]], group_name: str):
     date_col = None
     time_col = None
 
-    # 1) строка заголовков: ищем "Дата" и "Часы"
-    for i in range(min(60, len(rows))):
+    # 1) строка заголовков
+    for i in range(min(80, len(rows))):
         row = [norm(x) for x in rows[i]]
         low = [x.lower() for x in row]
-        if "дата" in low and "часы" in low:
+
+        # ищем по "вхождению", а не по строгому равенству
+        def find_col(keyword: str):
+            for idx, cell in enumerate(low):
+                if keyword in cell:
+                    return idx
+            return None
+
+        dc = find_col("дата")
+        tc = find_col("часы")
+        if dc is not None and tc is not None:
             header_row_i = i
-            date_col = low.index("дата")
-            time_col = low.index("часы")
+            date_col = dc
+            time_col = tc
             break
 
     if header_row_i is None:
-        raise RuntimeError("Не нашла заголовки 'Дата' и 'Часы' в таблице (CSV).")
+        # дебаг: покажем первые строки, чтобы понять структуру
+        preview = "\n".join([" | ".join([norm(x) for x in rows[k][:8]]) for k in range(min(8, len(rows)))])
+        raise RuntimeError("Не нашла заголовки 'Дата' и 'Часы' в таблице (CSV).\nПервые строки:\n" + preview)
 
-    # 2) колонки группы: ищем рядом ниже заголовков
+    # 2) колонки группы — ищем ниже заголовков (в пределах 20 строк)
     group_cols = []
-    for i in range(header_row_i, min(header_row_i + 12, len(rows))):
+    for i in range(header_row_i, min(header_row_i + 20, len(rows))):
         row = rows[i]
         for j, cell in enumerate(row):
             if norm_group(cell) == g_need:
@@ -175,8 +194,7 @@ def glue_markers_to_prev(lines: list[str]) -> list[str]:
 # Извлечение расписания на дату
 # =========================
 def extract_schedule_for_date(csv_text: str, group_name: str, target_ddmm: str):
-    reader = csv.reader(io.StringIO(csv_text))
-    rows = list(reader)
+    rows = read_csv_rows(csv_text)
 
     header_i, date_col, time_col, group_cols = find_header_and_group_cols(rows, group_name)
 
