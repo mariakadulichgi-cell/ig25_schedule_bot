@@ -86,16 +86,15 @@ def normalize_time(text: str) -> str | None:
     return f"{int(h1):02d}:{m1}–{int(h2):02d}:{m2}"
 
 def fetch_csv_text(url: str) -> str:
-    global _CACHE_TEXT, _CACHE_TS
-    now = time.time()
-    if _CACHE_TEXT and (now - _CACHE_TS) < CACHE_SECONDS:
-        return _CACHE_TEXT
-
     r = requests.get(url, timeout=25)
     r.raise_for_status()
-    _CACHE_TEXT = r.text
-    _CACHE_TS = now
-    return _CACHE_TEXT
+
+    # Пробуем UTF-8
+    try:
+        return r.content.decode("utf-8")
+    except UnicodeDecodeError:
+        # Если не получилось — значит Windows-1251
+        return r.content.decode("cp1251")
 
 def read_csv_rows(csv_text: str) -> list[list[str]]:
     # Автоматически определяем разделитель CSV (Google часто даёт ;)
