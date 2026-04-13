@@ -49,7 +49,6 @@ DEFAULT_GROUP = "ИГ25-01Б-ОМ"
 DATE_RE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\b")
 TIME_RE = re.compile(r"(\d{1,2})[.:](\d{2})\s*[–—-]\s*(\d{1,2})[.:](\d{2})")
 
-# Кэш таблицы
 _CACHE_ROWS: Optional[List[List[str]]] = None
 _CACHE_TS: float = 0.0
 
@@ -110,7 +109,6 @@ def to_xlsx_export_url(url: str) -> str:
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     if not match:
         return url
-
     spreadsheet_id = match.group(1)
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=xlsx"
 
@@ -162,7 +160,32 @@ def worksheet_to_rows(ws) -> List[List[str]]:
     return rows
 
 
-def fetch_sheet_rows(url: str, sheet_name: Optional[str] = None) -> List[List[str]]:
+def find_col_by_keywords(row_lower: List[str], keywords: List[str]) -> Optional[int]:
+    for idx, cell in enumerate(row_lower):
+        for keyword in keywords:
+            if keyword in cell:
+                return idx
+    return None
+
+
+def sheet_looks_like_schedule(rows: List[List[str]], group_name: str) -> bool:
+    target_group = norm_group(group_name)
+
+    for i in range(min(120, len(rows))):
+        row = [norm(cell) for cell in rows[i]]
+        row_lower = [cell.lower() for cell in row]
+
+        has_date = find_col_by_keywords(row_lower, ["дата"]) is not None
+        has_time = find_col_by_keywords(row_lower, ["часы", "время"]) is not None
+        has_group = any(target_group == norm_group(cell) for cell in row)
+
+        if has_date and has_time and has_group:
+            return True
+
+    return False
+
+
+def fetch_sheet_rows(url: str, group_name: str, sheet_name: Optional[str] = None) -> List[List[str]]:
     export_url = to_xlsx_export_url(url)
 
     response = requests.get(export_url, timeout=30)
@@ -170,6 +193,7 @@ def fetch_sheet_rows(url: str, sheet_name: Optional[str] = None) -> List[List[st
 
     workbook = load_workbook(io.BytesIO(response.content), data_only=True)
 
+    # 1. Если лист указан явно — читаем его
     if sheet_name:
         if sheet_name not in workbook.sheetnames:
             available = ", ".join(workbook.sheetnames)
@@ -177,13 +201,30 @@ def fetch_sheet_rows(url: str, sheet_name: Optional[str] = None) -> List[List[st
                 f"Лист '{sheet_name}' не найден. Доступные листы: {available}"
             )
         worksheet = workbook[sheet_name]
-    else:
-        worksheet = workbook.active
+        return worksheet_to_rows(worksheet)
 
-    return worksheet_to_rows(worksheet)
+    # 2. Если лист не указан — ищем автоматически
+    for ws in workbook.worksheets:
+        rows = worksheet_to_rows(ws)
+        if sheet_looks_like_schedule(rows, group_name):
+            return rows
+
+    # 3. Если не нашли — покажем доступные вкладки
+    available = ", ".join(workbook.sheetnames)
+    first_sheet_rows = worksheet_to_rows(workbook.worksheets[0])
+    preview = "\n".join(
+        " | ".join([norm(cell) for cell in first_sheet_rows[k][:12]])
+        for k in range(min(10, len(first_sheet_rows)))
+    )
+
+    raise RuntimeError(
+        "Не удалось автоматически найти лист с расписанием.\n"
+        f"Доступные листы: {available}\n\n"
+        f"Первые строки первого листа:\n{preview}"
+    )
 
 
-def get_rows_with_cache(url: str, sheet_name: Optional[str]) -> List[List[str]]:
+def get_rows_with_cache(url: str, group_name: str, sheet_name: Optional[str]) -> List[List[str]]:
     global _CACHE_ROWS, _CACHE_TS
 
     cache_seconds = int(os.getenv("CACHE_SECONDS", "60") or "60")
@@ -192,18 +233,10 @@ def get_rows_with_cache(url: str, sheet_name: Optional[str]) -> List[List[str]]:
     if _CACHE_ROWS is not None and (now - _CACHE_TS) < cache_seconds:
         return _CACHE_ROWS
 
-    rows = fetch_sheet_rows(url, sheet_name)
+    rows = fetch_sheet_rows(url, group_name, sheet_name)
     _CACHE_ROWS = rows
     _CACHE_TS = now
     return rows
-
-
-def find_col_by_keywords(row_lower: List[str], keywords: List[str]) -> Optional[int]:
-    for idx, cell in enumerate(row_lower):
-        for keyword in keywords:
-            if keyword in cell:
-                return idx
-    return None
 
 
 def find_header_and_group_cols(
@@ -216,7 +249,6 @@ def find_header_and_group_cols(
     date_col: Optional[int] = None
     time_col: Optional[int] = None
 
-    # Ищем строку заголовков
     for i in range(min(120, len(rows))):
         row = [norm(cell) for cell in rows[i]]
         row_lower = [cell.lower() for cell in row]
@@ -240,7 +272,6 @@ def find_header_and_group_cols(
             f"Первые строки таблицы:\n{preview}"
         )
 
-    # Ищем все колонки нужной группы
     group_cols: List[int] = []
     search_until = min(header_row_idx + 30, len(rows))
 
@@ -253,7 +284,6 @@ def find_header_and_group_cols(
     group_cols = sorted(set(group_cols))
 
     if not group_cols:
-        # запасной поиск по частичному совпадению
         for i in range(header_row_idx, search_until):
             row = rows[i]
             for j, cell in enumerate(row):
@@ -484,7 +514,6 @@ def split_message(text: str, limit: int = 3800) -> List[str]:
             current = line
             continue
 
-        # если одна строка слишком длинная — режем её
         rest = line
         while len(rest) > limit:
             chunks.append(rest[:limit])
@@ -518,7 +547,7 @@ async def send_schedule(update: Update, ddmm: str):
         return
 
     try:
-        rows = get_rows_with_cache(sheet_url, sheet_name)
+        rows = get_rows_with_cache(sheet_url, group_name, sheet_name)
         items = extract_schedule_for_date(rows, group_name, ddmm)
         message = format_schedule(group_name, ddmm, items)
         await reply_long(update, message)
