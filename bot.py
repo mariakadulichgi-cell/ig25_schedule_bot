@@ -80,7 +80,14 @@ def compact_spaces(text: str) -> str:
 
 def parse_ddmm(text: object) -> Optional[str]:
     raw = norm(text)
-    match = DATE_RE.search(raw)
+
+    # убираем пробелы и чиним кривые разделители
+    raw = raw.replace(" ", "")
+    raw = re.sub(r"\.+", ".", raw)          # 13..04 -> 13.04
+    raw = re.sub(r"[-/]{2,}", "-", raw)     # 13--04 -> 13-04
+    raw = re.sub(r"[.\-/]{2,}", ".", raw)   # любой повтор разделителей -> "."
+
+    match = re.search(r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?", raw)
     if not match:
         return None
 
@@ -91,7 +98,6 @@ def parse_ddmm(text: object) -> Optional[str]:
         return None
 
     return f"{day:02d}.{month:02d}"
-
 
 def normalize_time(text: object) -> Optional[str]:
     raw = norm(text)
