@@ -75,6 +75,33 @@ def parse_admin_ids() -> Set[int]:
 
     return result
 
+def parse_teachers_from_env() -> Dict[int, str]:
+    raw = os.getenv("TEACHERS", "").strip()
+    result: Dict[int, str] = {}
+
+    if not raw:
+        return result
+
+    for item in raw.split(";"):
+        item = item.strip()
+
+        if not item:
+            continue
+
+        if "=" in item:
+            left, right = item.split("=", 1)
+        elif ":" in item:
+            left, right = item.split(":", 1)
+        else:
+            continue
+
+        teacher_id = left.strip()
+        fio = right.strip()
+
+        if teacher_id.isdigit() and fio:
+            result[int(teacher_id)] = fio
+
+    return result
 
 def is_admin(user_id: int) -> bool:
     return user_id in parse_admin_ids()
@@ -127,6 +154,11 @@ def remove_teacher_from_db(telegram_id: int) -> bool:
 
 
 def get_teacher_fio(telegram_id: int) -> Optional[str]:
+    teachers_from_env = parse_teachers_from_env()
+
+    if telegram_id in teachers_from_env:
+        return teachers_from_env[telegram_id]
+
     conn = sqlite3.connect(get_db_path())
     cur = conn.cursor()
 
@@ -140,8 +172,12 @@ def get_teacher_fio(telegram_id: int) -> Optional[str]:
 
     return None
 
-
 def get_all_teachers_from_db() -> List[Tuple[int, str]]:
+    result: Dict[int, str] = {}
+
+    teachers_from_env = parse_teachers_from_env()
+    result.update(teachers_from_env)
+
     conn = sqlite3.connect(get_db_path())
     cur = conn.cursor()
 
@@ -150,8 +186,14 @@ def get_all_teachers_from_db() -> List[Tuple[int, str]]:
 
     conn.close()
 
-    return [(int(row[0]), str(row[1])) for row in rows]
+    for row in rows:
+        teacher_id = int(row[0])
+        fio = str(row[1])
 
+        if teacher_id not in result:
+            result[teacher_id] = fio
+
+    return sorted(result.items(), key=lambda item: item[1].lower())
 
 # =========================
 # Утилиты
