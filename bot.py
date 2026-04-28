@@ -650,12 +650,36 @@ def extract_schedule_for_date(
 
 
 def format_schedule(group_name: str, ddmm: str, items: List[Tuple[str, str]]) -> str:
-    title = f"{group_name} — {ddmm}:"
+    months = {
+        "01": "января",
+        "02": "февраля",
+        "03": "марта",
+        "04": "апреля",
+        "05": "мая",
+        "06": "июня",
+        "07": "июля",
+        "08": "августа",
+        "09": "сентября",
+        "10": "октября",
+        "11": "ноября",
+        "12": "декабря",
+    }
+
+    day, month = ddmm.split(".")
+    pretty_date = f"{int(day)} {months.get(month, month)}"
 
     if not items:
-        return title + "\n• Нет пары"
+        return (
+            f"📅 Расписание на {pretty_date}\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"На этот день пар нет 💙"
+        )
 
-    out_lines: List[str] = [title]
+    out_lines: List[str] = [
+        f"📅 Расписание на {pretty_date}",
+        "━━━━━━━━━━━━━━",
+        ""
+    ]
 
     for time_value, text_block in items:
         lines = [line.strip() for line in text_block.splitlines() if line.strip()]
@@ -664,10 +688,14 @@ def format_schedule(group_name: str, ddmm: str, items: List[Tuple[str, str]]) ->
         if not lines:
             continue
 
-        out_lines.append(f"• {time_value} — {lines[0]}")
+        subject = lines[0]
+        details = lines[1:]
 
-        for line in lines[1:]:
-            out_lines.append(f"  {line}")
+        out_lines.append(f"⏰ {time_value}")
+        out_lines.append(f"📌 {subject}")
+
+        if details:
+            out_lines.append(f"👥 {' | '.join(details)}")
 
         out_lines.append("")
 
@@ -675,7 +703,6 @@ def format_schedule(group_name: str, ddmm: str, items: List[Tuple[str, str]]) ->
         out_lines.pop()
 
     return "\n".join(out_lines)
-
 
 # =========================
 # Расписание преподавателя
@@ -841,16 +868,38 @@ def format_teacher_schedule(
     ddmm: str,
     items: List[Tuple[str, str, str]],
 ) -> str:
-    title = f"Расписание преподавателя:\n{teacher_fio} — {ddmm}:"
+    months = {
+        "01": "января",
+        "02": "февраля",
+        "03": "марта",
+        "04": "апреля",
+        "05": "мая",
+        "06": "июня",
+        "07": "июля",
+        "08": "августа",
+        "09": "сентября",
+        "10": "октября",
+        "11": "ноября",
+        "12": "декабря",
+    }
+
+    day, month = ddmm.split(".")
+    pretty_date = f"{int(day)} {months.get(month, month)}"
 
     if not items:
         return (
-            title
-            + "\n• Пар не найдено\n\n"
-            + "Если пары точно есть, проверь, совпадает ли ФИО в базе с написанием в таблице."
+            f"📅 Расписание преподавателя на {pretty_date}\n"
+            f"👤 {teacher_fio}\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"На этот день пар нет 💙"
         )
 
-    out_lines: List[str] = [title]
+    out_lines: List[str] = [
+        f"📅 Расписание преподавателя на {pretty_date}",
+        f"👤 {teacher_fio}",
+        "━━━━━━━━━━━━━━",
+        ""
+    ]
 
     for time_value, group_name, text_block in items:
         lines = [line.strip() for line in text_block.splitlines() if line.strip()]
@@ -859,15 +908,22 @@ def format_teacher_schedule(
         if not lines:
             continue
 
-        out_lines.append("")
-        out_lines.append(f"• {time_value} — {group_name}")
-        out_lines.append(f"  {lines[0]}")
+        subject = lines[0]
+        details = lines[1:]
 
-        for line in lines[1:]:
-            out_lines.append(f"  {line}")
+        out_lines.append(f"⏰ {time_value}")
+        out_lines.append(f"👥 {group_name}")
+        out_lines.append(f"📌 {subject}")
+
+        if details:
+            out_lines.append(f"📝 {' | '.join(details)}")
+
+        out_lines.append("")
+
+    while out_lines and out_lines[-1] == "":
+        out_lines.pop()
 
     return "\n".join(out_lines)
-
 
 def parse_teacher_date_from_args(args: List[str]) -> Optional[str]:
     raw = " ".join(args).strip().lower()
