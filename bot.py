@@ -475,6 +475,8 @@ def find_header_and_group_cols(
 
 def should_skip_cell_text(text: str, group_name: str) -> bool:
     lowered = text.lower().strip()
+    lowered = lowered.replace("ё", "е")
+    lowered = re.sub(r"\s+", " ", lowered)
 
     if not lowered:
         return True
@@ -489,10 +491,13 @@ def should_skip_cell_text(text: str, group_name: str) -> bool:
         "проректор",
         "директор",
         "учебный год",
+        "вид занятия",
+        "аудитория",
+        "вид занятия/аудитория",
+        "вид занятия / аудитория",
     )
 
     return any(fragment in lowered for fragment in trash_fragments)
-
 
 def glue_markers_to_prev(lines: List[str]) -> List[str]:
     out: List[str] = []
