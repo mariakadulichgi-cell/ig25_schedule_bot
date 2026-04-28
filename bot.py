@@ -1082,9 +1082,9 @@ async def cmd_list_teachers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_long(update, "\n".join(lines))
 
 
-async def cmd_prepod(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_teacher_fio_or_reply(update: Update) -> Optional[str]:
     if not update.effective_user:
-        return
+        return None
 
     user_id = update.effective_user.id
     teacher_fio = get_teacher_fio(user_id)
@@ -1095,10 +1095,50 @@ async def cmd_prepod(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "У вас нет доступа к расписанию преподавателя.\n\n"
             "Сначала отправьте администратору команду /id.",
         )
+        return None
+
+    return teacher_fio
+
+
+async def cmd_prepod_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    teacher_fio = await get_teacher_fio_or_reply(update)
+
+    if not teacher_fio:
         return
 
-    ddmm = parse_teacher_date_from_args(context.args)
+    ddmm = datetime.now(get_tz()).strftime("%d.%m")
+    await send_teacher_schedule(update, teacher_fio, ddmm)
 
+
+async def cmd_prepod_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    teacher_fio = await get_teacher_fio_or_reply(update)
+
+    if not teacher_fio:
+        return
+
+    ddmm = (datetime.now(get_tz()) + timedelta(days=1)).strftime("%d.%m")
+    await send_teacher_schedule(update, teacher_fio, ddmm)
+
+
+async def cmd_prepod_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    teacher_fio = await get_teacher_fio_or_reply(update)
+
+    if not teacher_fio:
+        return
+
+    raw = " ".join(context.args).strip()
+
+    if not raw:
+        await reply_long(update, "Напишите так: /prepod_day 30.01")
+        return
+
+    ddmm = parse_ddmm(raw)
+
+    if not ddmm:
+        await reply_long(update, "Формат даты: /prepod_day 30.01")
+        return
+
+    await send_teacher_schedule(update, teacher_fio, ddmm)
     if not ddmm:
         await reply_long(
             update,
@@ -1159,9 +1199,9 @@ def main():
     app.add_handler(CommandHandler("add_teacher", cmd_add_teacher))
     app.add_handler(CommandHandler("remove_teacher", cmd_remove_teacher))
     app.add_handler(CommandHandler("list_teachers", cmd_list_teachers))
-    app.add_handler(CommandHandler("prepod", cmd_prepod))
-    app.add_handler(CommandHandler("teacher", cmd_prepod))
-
+    app.add_handler(CommandHandler("prepod_today", cmd_prepod_today))
+    app.add_handler(CommandHandler("prepod_tomorrow", cmd_prepod_tomorrow))
+    app.add_handler(CommandHandler("prepod_day", cmd_prepod_day))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_day))
 
     print("Bot started / polling")
